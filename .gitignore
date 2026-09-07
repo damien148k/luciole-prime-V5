@@ -13,7 +13,7 @@ data/
 *.db
 *.sqlite3
 # Genere par INSTALL.ps1 : config d'instance, modeles, volumes locaux
-config/
+/config/
 models/
 backups/
 evaluation/jeu_*.jsonl

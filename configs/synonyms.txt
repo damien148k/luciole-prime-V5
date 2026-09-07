@@ -1,0 +1,11 @@
+# Synonymes pour la recherche RAG - Luciole
+# Format: terme1, terme2, terme3 (bidirectionnel)
+# Version: 3.2 — Luciole (socle neutre)
+#
+# Ce fichier est VIDE par défaut. Ajoutez vos synonymes métier ci-dessous.
+# Chaque ligne définit un groupe de synonymes bidirectionnels.
+# Rechargeable à chaud depuis l'UI Admin > Configuration > Synonymes.
+#
+# Exemple :
+# mot1, mot2, mot3
+# abréviation, forme longue, variante

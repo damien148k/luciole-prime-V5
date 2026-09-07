@@ -1,0 +1,10 @@
+# Fins de ligne normalisees : LF dans le depot et dans les conteneurs Linux,
+# CRLF seulement pour les scripts PowerShell lus par Windows.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

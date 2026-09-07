@@ -1,0 +1,233 @@
+# Luciole Prime V4 — GABARIT. Ne pas lancer directement depuis ce dossier.
+#
+# Ce fichier est copie par INSTALL.ps1 dans le dossier de chaque INSTANCE
+# (C:\RAG\luciole-<nom>\docker-compose.yml), avec le jeton __PACKAGE_DIR__
+# remplace par le chemin absolu de CE depot. Une instance = un dossier
+# separe = son propre .env, sa config, ses donnees, ses volumes Qdrant/
+# OpenSearch. Les gros modeles (embeddings, reranker, LLM Ollama) restent
+# dans __PACKAGE_DIR__/models et sont PARTAGES entre toutes les instances :
+# ce sont des caches de contenu adressé (HuggingFace hub, blobs Ollama),
+# surs à partager en lecture/ecriture entre plusieurs conteneurs, et cela
+# evite de retelecharger 10+ Go a chaque nouveau projet. Les donnees
+# Qdrant/OpenSearch, elles, ne sont JAMAIS partagees (isolees via les
+# noms de volume ci-dessous).
+#
+# Services : ollama (LLM), qdrant (dense), opensearch (BM25), rag (API L2),
+# watcher (ingestion, seule voie d'entree des documents), chat et feedback (UI L3), admin (L4).
+
+x-luciole: &luciole
+  image: ${LUCIOLE_IMAGE:-luciole-v4:latest}
+  build:
+    context: __PACKAGE_DIR__
+    dockerfile: __PACKAGE_DIR__/Dockerfile
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: luciole-ollama-${INSTANCE_NAME}
+    ports:
+      - 127.0.0.1:${OLLAMA_PORT:-11434}:11434
+    volumes:
+      - __PACKAGE_DIR__/models/ollama:/root/.ollama
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_KEEP_ALIVE=60m
+      # Fenetre serveur alignee sur llm.num_ctx de settings.yaml.
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-32768}
+      # Cache KV quantifie + flash attention : ~1,5 Go de moins a 16k (12 Go)
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-0}
+      - OLLAMA_KV_CACHE_TYPE=${OLLAMA_KV_CACHE_TYPE:-f16}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: luciole-qdrant-${INSTANCE_NAME}
+    ports:
+      - 127.0.0.1:${QDRANT_PORT:-6333}:6333
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: luciole-opensearch-${INSTANCE_NAME}
+    ports:
+      - 127.0.0.1:${OPENSEARCH_PORT:-9200}:9200
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx1g
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  rag:
+    <<: *luciole
+    container_name: luciole-rag-${INSTANCE_NAME}
+    depends_on: [qdrant, opensearch]
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - INSTANCE_NAME=${INSTANCE_NAME}
+      - LLM_URL=http://ollama:11434
+      # Sur 12 Go de VRAM : cpu pour laisser la carte au LLM (voir .env)
+      - RERANKER_DEVICE=${RERANKER_DEVICE:-auto}
+      - EMBEDDER_DEVICE=${EMBEDDER_DEVICE:-auto}
+      - QDRANT_URL=http://qdrant:6333
+      - OPENSEARCH_URL=http://opensearch:9200
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./config:/app/config
+      - ./evaluation:/app/evaluation
+      - __PACKAGE_DIR__/models/huggingface:/app/models/huggingface
+    ports:
+      - ${API_PORT:-8000}:8000
+    command: ["python", "-m", "uvicorn", "src.rag.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  # ── Chat (couche 3) ───────────────────────────────────────────────────────
+  # Interface de conversation. Ne parle au coeur RAG que par son contrat
+  # public POST /api/rag/query : aucun acces direct a Qdrant/OpenSearch,
+  # aucun modele charge, donc aucun besoin de GPU.
+  chat:
+    <<: *luciole
+    container_name: luciole-chat-${INSTANCE_NAME}
+    depends_on: [rag]
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - INSTANCE_NAME=${INSTANCE_NAME}
+      - RAG_URL=http://rag:8000
+      # Vide pour masquer le bouton d'avis ; sinon le service feedback n'est pas deploye : le bouton
+      # d'avis est alors masque, jamais en erreur.
+      - FEEDBACK_URL=${FEEDBACK_URL:-http://feedback:8503}
+    volumes:
+      - ./config:/app/config:ro
+    ports:
+      - ${CHAT_PORT:-8501}:8501
+    command: ["python", "-m", "uvicorn", "src.ui.chat_ui:app", "--host", "0.0.0.0", "--port", "8501"]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  # ── Recueil d'avis (couche 3) ─────────────────────────────────────────────
+  # Base SQLite propre a l'instance (./feedbacks), editeur de configuration
+  # et gestion des modeles Ollama. Comme le chat : aucun modele charge,
+  # donc aucun GPU ; le coeur RAG n'est atteint que par son contrat public.
+  feedback:
+    <<: *luciole
+    container_name: luciole-feedback-${INSTANCE_NAME}
+    depends_on: [rag]
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - INSTANCE_NAME=${INSTANCE_NAME}
+      - RAG_URL=http://rag:8000
+      - LLM_URL=http://ollama:11434
+      - FEEDBACK_DB_PATH=/app/feedbacks/feedbacks.db
+    volumes:
+      # config en lecture-ecriture : l'editeur de configuration et
+      # l'activation d'un modele ecrivent settings.yaml, puis demandent
+      # au coeur RAG de relire a chaud.
+      - ./config:/app/config
+      - ./feedbacks:/app/feedbacks
+    ports:
+      - ${FEEDBACK_PORT:-8503}:8503
+    command: ["python", "-m", "uvicorn", "src.ui.feedback_ui:app", "--host", "0.0.0.0", "--port", "8503"]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  # ── Administration (couche 4) ─────────────────────────────────────────────
+  # Supervision du watcher, gestion des index et evaluation RAGAS. Ne
+  # commande plus l'ingestion : en V4 le watcher en est la seule voie.
+  # backups/ en lecture seule : l'admin y lit le journal du watcher, elle
+  # n'a pas acces au demon Docker.
+  admin:
+    <<: *luciole
+    container_name: luciole-admin-${INSTANCE_NAME}
+    depends_on: [rag, watcher]
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - INSTANCE_NAME=${INSTANCE_NAME}
+      - RAG_URL=http://rag:8000
+      - WATCHER_URL=http://watcher:8090
+      # Evaluation RAGAS : Ollama via son API compatible OpenAI (/v1).
+      - LLM_URL=http://ollama:11434
+      - QDRANT_URL=http://qdrant:6333
+      - OPENSEARCH_URL=http://opensearch:9200
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    volumes:
+      - ./config:/app/config
+      - ./backups:/app/backups:ro
+      - ./feedbacks:/app/feedbacks
+    ports:
+      - ${ADMIN_PORT:-8080}:8080
+    command: ["python", "-m", "uvicorn", "src.ui.admin_ui:app", "--host", "0.0.0.0", "--port", "8080"]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  watcher:
+    <<: *luciole
+    container_name: luciole-watcher-${INSTANCE_NAME}
+    depends_on: [qdrant, opensearch]
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - INSTANCE_NAME=${INSTANCE_NAME}
+      - QDRANT_URL=http://qdrant:6333
+      - OPENSEARCH_URL=http://opensearch:9200
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - CUDA_VISIBLE_DEVICES=0
+      - WATCHER_ENABLED=${WATCHER_ENABLED:-true}
+      - WATCHER_INDEX_NAME=${INSTANCE_NAME}
+      - WATCHER_DB_PATH=/app/backups/watcher/watcher.db
+      - WATCHER_MAX_FILE_SIZE_MB=${WATCHER_MAX_FILE_SIZE_MB:-9999}
+      - WATCHER_PORT=8090
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data:ro
+      - ./backups:/app/backups
+      - __PACKAGE_DIR__/models/huggingface:/app/models/huggingface
+    ports:
+      - 127.0.0.1:${WATCHER_PORT:-8090}:8090
+    command: ["python", "-m", "uvicorn", "src.watcher.main:app", "--host", "0.0.0.0", "--port", "8090"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+volumes:
+  # Isoles par instance (nom explicite) : jamais partages, contrairement
+  # aux modeles ci-dessus. Une suppression (docker compose down -v) ne
+  # touche donc que les donnees Qdrant/OpenSearch DE CETTE instance.
+  qdrant_storage:
+    name: luciole-qdrant-storage-${INSTANCE_NAME}
+  opensearch_data:
+    name: luciole-opensearch-data-${INSTANCE_NAME}

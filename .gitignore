@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+*.log
+.DS_Store
+.idea/
+.vscode/
+data/
+*.db
+*.sqlite3
+# Genere par INSTALL.ps1 : config d'instance, modeles, volumes locaux
+config/
+models/
+backups/
+evaluation/jeu_*.jsonl
+evaluation/campagne_*.jsonl
+evaluation/rapport_*.txt
+INSTANCE_CREDENTIALS.txt
+node_modules/
+dist/
+build/
+
+# Package hors-ligne genere par PREPARE_OFFLINE.ps1 (22 Go) : jamais dans le depot
+offline_package/
+.pytest_cache/
+feedbacks/
+# Gabarits qui DOIVENT rester versionnes malgre les regles ci-dessus
+!.env.template
+!evaluation/jeu_reference.exemple.jsonl

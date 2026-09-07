@@ -1,0 +1,71 @@
+# Luciole Prime V4 — dependances de production (Linux GPU/CPU).
+# torch est installe separement dans le Dockerfile (index cu124 ou cpu).
+
+# Epingle explicitement, sinon pip remplace silencieusement le torch
+# CUDA 12.4 installe par le Dockerfile : en resolvant les dependances de
+# sentence-transformers/transformers (qui ne bornent que "torch>=2.2"),
+# pip choisit la derniere version disponible sur l'index PyPI par defaut
+# (pas l'index cu124), desinstalle torch==2.6.0+cu124 et installe une
+# version bien plus recente livree avec des paquets nvidia-*-cu13 —
+# incompatibles avec la base CUDA 12.4 du conteneur. Constate le 7
+# septembre 2026 : `import sentence_transformers` echouait alors en
+# ImportError, remonte a tort comme "sentence-transformers n'est pas
+# installe" (le guard de embedder.py ne distingue pas "absent" de
+# "present mais casse"). Cette ligne fait que pip reconnait le torch
+# deja installe comme satisfaisant la contrainte et ne le touche plus.
+torch==2.6.0
+
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+httpx>=0.27.0
+python-multipart>=0.0.9
+
+# Journalisation et configuration
+loguru>=0.7.2
+PyYAML>=6.0.1
+
+# Watcher
+watchdog>=4.0.0
+
+# Embeddings et reranking (locaux)
+sentence-transformers>=3.0.0
+numpy>=1.26.0
+huggingface_hub>=0.24.0
+safetensors>=0.4.3
+
+# Moteurs de recherche
+qdrant-client>=1.9.0
+opensearch-py>=2.5.0
+
+# Parsing documentaire
+pymupdf>=1.24.0
+pymupdf4llm>=1.28.0
+pymupdf-layout>=1.28.2
+python-docx>=1.1.0
+python-pptx>=0.6.23
+openpyxl>=3.1.2
+pandas>=2.2.0
+extract-msg==0.48.0
+striprtf>=0.0.26
+beautifulsoup4>=4.12.3
+
+# OCR (optionnel, active par pdf.enable_ocr)
+easyocr>=1.7.1
+
+# Tests
+pytest>=8.0.0
+
+# --- Evaluation RAGAS (interface admin, onglet RAGAS) ----------------------
+# Versions reprises de la V3, ou la chaine ragas/langchain a ete eprouvee.
+# L'evaluateur (evaluation/ragas_evaluator.py) parle a Ollama via l'API
+# compatible OpenAI : aucun appel sortant, aucune cle d'API.
+ragas==0.4.3
+langchain==0.3.27
+langchain-core==0.3.86
+langchain-community==0.3.31
+langchain-openai==0.3.35
+langchain-text-splitters==0.3.11
+datasets>=4.0.0,<6.0.0
+openai>=1.30.0

@@ -1,0 +1,132 @@
+# Configuration d'une instance Luciole V4 — UNIQUE source de verite.
+# Chaque cle est lue sur cet objet a chaque usage ; aucun composant n'en
+# garde de copie. Modifier ici puis « reload config » depuis l'UI suffit.
+# Les variables d'environnement Docker (QDRANT_URL, OPENSEARCH_URL,
+# LLM_URL, INSTANCE_NAME) l'emportent sur les cles correspondantes.
+
+instance:
+  name: mrae-beaumont          # = collection Qdrant, index OpenSearch (minuscules)
+
+embedding:
+  model: BAAI/bge-m3
+  device: auto
+  batch_size: 32
+
+reranker:
+  model: BAAI/bge-reranker-v2-m3
+  device: auto
+  batch_size: 32
+
+retrieval:
+  bm25_top_k: 40               # pool brut BM25
+  dense_top_k: 40              # pool brut dense
+  search_top_k: 100            # sortie de la fusion RRF
+  fusion_top_k: 30             # pool soumis au reranker
+  rerank_top_n: 15             # passages conserves pour le LLM (seule definition)
+  bm25_weight: 0.45
+  dense_weight: 0.55
+  rrf_k: 60
+
+llm:
+  provider: ollama
+  model: qwen2.5:14b-instruct-q4_K_M
+  base_url: http://ollama:11434
+  api_format: ollama           # porte native /api/chat : num_ctx transmis
+  temperature: 0
+  seed: 42
+  max_tokens: 4096
+  num_ctx: 32768               # A5000 24 Go : ~18-20 Go avec le 14B q4 + KV 32k
+  timeout: 1800
+
+chunking:
+  # 1024/150 : valeurs retenues apres les campagnes Brissy et Beaumont Sud
+  # du 7 septembre 2026. Un chunk plus large porte le contexte d'un
+  # paragraphe entier de tome d'etude d'impact ; le recouvrement evite de
+  # couper une mesure au milieu.
+  chunk_size: 1024
+  chunk_overlap: 150
+  strategy: sentence
+  include_file_context: true
+  adaptive: true
+
+chunking_strategies:
+  pdf:  {strategy: sentence,  chunk_size: 1024, chunk_overlap: 150}
+  docx: {strategy: paragraph, chunk_size: 600, chunk_overlap: 80}
+  xlsx: {strategy: row_group, rows_per_chunk: 20, include_header: true}
+  pptx: {strategy: slide,     chunk_size: 800, chunk_overlap: 0}
+  msg:  {strategy: email,     chunk_size: 800, chunk_overlap: 0}
+  txt:  {strategy: sentence,  chunk_size: 400, chunk_overlap: 50}
+
+pdf:
+  enable_ocr: false
+  markdown_timeout: 0
+  markdown_timeout_per_page: 2.0
+  ocr_dpi: 300
+  max_drawings_per_page: 500
+  min_yield_ratio: 0.5
+
+qdrant:
+  host: localhost
+  port: 6333
+  collection_name: mrae-beaumont
+
+opensearch:
+  host: localhost
+  port: 9200
+  index_name: mrae-beaumont
+
+# Fichiers tabulaires (.xlsx, .xls). Le parser avance ecrit les donnees
+# brutes dans une base SQLite pour permettre des recherches structurees.
+# Cette base va dans backups\ et JAMAIS dans data\ : le watcher monte le
+# dossier de documents en lecture seule, SQLite ne peut pas y ecrire.
+excel:
+  sqlite_path: /app/backups/excel_data.db
+  enable_sql_storage: true
+  max_rows_per_chunk: 50
+
+# Le watcher est la seule voie d'ingestion : deposer, modifier ou
+# supprimer un fichier dans watched_paths declenche l'indexation.
+watcher:
+  enabled: true
+  watched_paths:
+    - path: /app/data
+      recursive: true
+      index_name: mrae-beaumont
+  polling_interval: 5.0
+  debounce_seconds: 3.0
+  stability_checks: 3
+  stability_interval: 2.0
+  max_worker_threads: 1
+  reconcile_interval: 300
+  reconcile_on_startup: true
+  max_file_size_mb: 9999
+  db_path: /app/backups/watcher/watcher.db
+  api_port: 8090
+  default_index_name: mrae-beaumont
+
+# Pipeline query2 (recherche A -> juge de couverture -> recherche B -> generation)
+query2:
+  termes_structurants: []      # ex. [beaumont, sud] : mots presents dans tous les titres
+  decoupage_volets: true      # decoupe la remarque en volets avant la recherche A
+  max_volets: 3               # volets au maximum (1 volet = comportement d'avant)
+  garde_contradiction: true
+  catalogue_couverture: true
+  deep:
+    bm25_top_k: 80
+    dense_top_k: 80
+    search_top_k: 200
+    fusion_top_k: 60
+    rerank_top_n: 30
+    coverage_max_passages: 20
+    coverage_max_queries: 4
+    quota_par_requete: 6
+    coverage_passage_chars: 1200
+
+# Evaluation RAGAS (onglet RAGAS de l'interface admin). Absente = le
+# modele de generation ci-dessus sert aussi de juge.
+ragas:
+  eval_model: qwen2.5:14b-instruct-q4_K_M   # juge des metriques
+  embed_model: nomic-embed-text             # a telecharger dans Ollama
+
+logging:
+  level: INFO

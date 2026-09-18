@@ -203,14 +203,14 @@ _ESQUIVE_REPONSE = re.compile(
     r"pas d'information|pas de mention|pas de precision|"
     r"reste(?:nt)? muet|est absente? d|sont absentes? d", re.I)
 
-# Motif de citation élargi. L'ancien motif (\.pdf|tome[_ ]?\d|source\s*:)
-# produisait un faux positif mesuré sur Beaumont Sud (cas beaumont-11) :
-# la génération citait "Volet environnement naturel, p. 460" ou "RNT,
-# p. 62" — jamais littéralement "Tome 4" ni un nom de fichier .pdf — donc
-# une réponse sourcée à 4 reprises était comptée comme non sourcée.
+# Motif de citation élargi, domaine-agnostique. Reconnaît les citations
+# produites par le LLM quelle que soit la nature du corpus (études
+# d'impact multi-tomes, tickets support .md, rapports .pdf…).
 _SOURCE_CITEE_REPONSE = re.compile(
-    r"\.pdf|tome[_ ]?\d|\[?source\s*:|"
-    r"volet\s+(?:environnement|milieu|paysage)|\bRNT\b|p\.\s*\d+", re.I)
+    r"\.\w{2,4}\b|tome[_ ]?\d|\[?source\s*:|"
+    r"volet\s+(?:environnement|milieu|paysage)|\bRNT\b|p\.\s*\d+|"
+    r"\bselon\s+(?:le |ce )|\bd'apres\s+(?:le |ce )|"
+    r"\bticket\b|\bfiche\b", re.I)
 
 
 def sans_accents(texte: str) -> str:

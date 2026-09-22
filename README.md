@@ -1,4 +1,4 @@
-# Luciole Prime V4
+# Luciole Prime V5
 
 Refonte complète de Luciole : plateforme d'assistant IA/RAG souveraine, offline et adaptable à tout cas d'usage métier, conçue pour interroger uniquement une base documentaire contrôlée afin de limiter les hallucinations et protéger la donnée.
 

@@ -602,6 +602,55 @@ body::after{
 }
 .cite:hover{background:var(--gold);color:#1a1208;transform:translateY(-1px)}
 
+/* === Mise en forme des reponses (rendu Markdown) === */
+.answer-content h2,.answer-content h3,.answer-content h4{line-height:1.3}
+.answer-content > h2:first-child,.answer-content > h3:first-child,.answer-content > h4:first-child{margin-top:0}
+.answer-content h4{
+  font-family:'Inter',sans-serif;font-size:.95rem;font-weight:600;
+  color:var(--text-primary);margin:1.1em 0 .4em;
+  padding-left:10px;border-left:3px solid var(--gold-deep);
+}
+.answer-content h2 strong,.answer-content h3 strong,.answer-content h4 strong{color:inherit}
+.answer-content ul ul,.answer-content ol ul,.answer-content ul ol{margin:.35em 0 .35em 1.2em}
+.answer-content ul ul li{margin-bottom:.2em;color:var(--text-secondary)}
+.answer-content li::marker{color:var(--gold-deep)}
+.answer-content hr{border:0;border-top:1px solid var(--border);margin:1.4em 0}
+.answer-content .table-wrap{overflow-x:auto;margin:.8em 0 1.2em}
+.answer-content table{border-collapse:collapse;width:100%;font-size:.9rem;line-height:1.5}
+.answer-content th,.answer-content td{
+  border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top;
+}
+.answer-content th{background:var(--bg-secondary);color:var(--gold-bright);font-weight:600}
+.cite.cite-src{
+  width:auto;height:auto;min-width:0;padding:1px 7px;
+  font-size:.68rem;font-weight:600;letter-spacing:.2px;white-space:nowrap;
+  vertical-align:1px;
+}
+.cite.cite-static{cursor:default}
+.cite.cite-static:hover{background:var(--gold-glow-soft);color:var(--gold);transform:none}
+.annexe-detail,.bloc-question{border:1px solid var(--border);border-radius:10px}
+.annexe-detail{margin-top:1.6em;background:rgba(17,26,54,0.35)}
+.annexe-detail > summary,.bloc-question > summary{
+  cursor:pointer;list-style:none;user-select:none;
+  display:flex;align-items:center;gap:8px;
+}
+.annexe-detail > summary::-webkit-details-marker,.bloc-question > summary::-webkit-details-marker{display:none}
+.annexe-detail > summary::before,.bloc-question > summary::before{
+  content:'›';display:inline-block;color:var(--gold);font-size:1.1rem;line-height:1;
+  transition:transform .2s;flex-shrink:0;
+}
+.annexe-detail[open] > summary::before,.bloc-question[open] > summary::before{transform:rotate(90deg)}
+.annexe-detail > summary{
+  padding:11px 16px;font-size:.78rem;font-weight:600;color:var(--gold);
+  text-transform:uppercase;letter-spacing:1.5px;
+}
+.annexe-detail > summary:hover,.bloc-question > summary:hover{background:var(--gold-glow-soft)}
+.annexe-body{padding:6px 14px 14px;border-top:1px solid var(--border)}
+.bloc-question{margin-top:10px;background:var(--bg-primary)}
+.bloc-question > summary{padding:9px 12px;font-size:.88rem;font-weight:500;color:var(--text-primary);line-height:1.4}
+.bloc-question-body{padding:4px 14px 12px;border-top:1px solid var(--border);font-size:.94rem}
+.bloc-question-body h2,.bloc-question-body h3{font-size:1.02rem}
+
 .rewrite-badge{
   display:inline-flex;align-items:center;gap:6px;
   padding:5px 10px;margin-bottom:14px;
@@ -1184,22 +1233,235 @@ function showToast(msg){
   setTimeout(()=>t.classList.remove('show'),1800);
 }
 
-// Convertit un texte de réponse en HTML : transforme [n] en <span class="cite">n</span> et garde les sauts de ligne
-function renderAnswerContent(text,cliquables=true){
-  if(!text) return '';
-  let html=escapeHtml(text);
-  // citations [n] ou [n,m] -> spans cliquables (renvoi vers la sidebar),
-  // ou statiques quand la numerotation ne correspond pas aux sources
-  // affichees : la reponse deep a ses propres passages, absents de la
-  // sidebar qui reste celle de la reponse principale.
-  html=html.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g,(m,nums)=>{
-    return nums.split(/\s*,\s*/).map(n=>cliquables
-      ?`<span class="cite" onclick="highlightSource(${n})">${n}</span>`
-      :`<span class="cite cite-static">${n}</span>`).join('');
+// ========== RENDU DE LA REPONSE ==========
+// Le texte produit par le pipeline est du Markdown (titres ###, gras **,
+// listes -, filet ---) avec des citations « [Source: fichier, page N] ».
+// Ce rendu minimal, sans bibliotheque externe (l'installation est hors
+// ligne), le convertit en HTML lisible :
+//  - titres, gras/italique, listes (imbriquees quand une puce se termine
+//    par « : » et que les suivantes la detaillent), tableaux, filets ;
+//  - citations [Source: ...] reduites en pastilles « Tome 1 · p. 64 »,
+//    cliquables vers la carte du document dans la sidebar ;
+//  - annexe « Detail par question » repliee, une question par volet,
+//    avec un intitule court (la partie « — en precisant : ... » passe
+//    en infobulle).
+// Tout le texte est echappe AVANT toute transformation : aucune balise
+// venant du modele n'est interpretee.
+
+function abregerSource(nom){
+  if(/(^|[_\s-])RNT([_\s.-]|$)|r[ée]sum[ée][_\s-]*non[_\s-]*technique/i.test(nom||'')) return 'RNT';
+  const m=/tome[_\s-]*(\d+)/i.exec(nom||'');
+  if(m) return 'Tome '+m[1];
+  let s=String(nom||'Source').replace(/\.[a-z0-9]{2,4}$/i,'').replace(/_/g,' ').trim();
+  return s.length>28?s.slice(0,26)+'…':s;
+}
+
+function abregerPages(type,val){
+  if(!type) return '';
+  let v=String(val||'').trim().replace(/\s*(?:à|a|-|–)\s*/g,'-');
+  return 'p. '+v;
+}
+
+// docs : liste issue de grouperParDocument (meme ordre que la sidebar),
+// ou null quand les citations ne doivent pas etre cliquables.
+function numeroDocument(nom,docs){
+  if(!docs) return null;
+  const n=String(nom).trim().toLowerCase();
+  const i=docs.findIndex(d=>String(d.file_name).trim().toLowerCase()===n);
+  return i>=0?i+1:null;
+}
+
+// Formatage en ligne sur un texte DEJA echappe.
+function rendreEnLigne(html,docs,cliquables){
+  // [Source: fichier.pdf, page 12] / [Source: fichier.pdf, pages 12 à 14]
+  html=html.replace(/\[Source\s*:\s*([^\],]+?)\s*(?:,\s*(pages?|p\.)\s*([^\]]+?))?\s*\]/gi,(m,nom,type,val)=>{
+    const libelle=escapeHtml(abregerSource(nom))+(type?' · '+escapeHtml(abregerPages(type,val)):'');
+    const num=cliquables?numeroDocument(nom,docs):null;
+    const titre=escapeHtml(nom+(type?', '+type+' '+val:''));
+    return num
+      ?`<span class="cite cite-src" title="${titre}" onclick="highlightSource(${num})">${libelle}</span>`
+      :`<span class="cite cite-src cite-static" title="${titre}">${libelle}</span>`;
   });
-  // paragraphes simples sur double retour à la ligne
-  const parts=html.split(/\n\n+/);
-  return parts.map(p=>'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');
+  // [n] ou [n,m] : numerotation des sources
+  html=html.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g,(m,nums)=>
+    nums.split(/\s*,\s*/).map(n=>cliquables
+      ?`<span class="cite" onclick="highlightSource(${n})">${n}</span>`
+      :`<span class="cite cite-static">${n}</span>`).join(''));
+  html=html.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+  html=html.replace(/\*\*([^*\n]+?)\*\*/g,'<strong>$1</strong>');
+  html=html.replace(/__([^_\n]+?)__/g,'<strong>$1</strong>');
+  html=html.replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\*)/g,'$1<em>$2</em>');
+  return html;
+}
+
+// Une puce qui annonce une sous-liste : « **Criteres :** » seul, « Detail : ».
+function puceAnnonce(t){
+  const s=t.replace(/\*\*/g,'').trim();
+  return /:\s*$/.test(s);
+}
+// Une puce qui commence par un libelle gras « **X :** ... » ou « **X** : ... ».
+function puceLibellee(t){
+  return /^\*\*[^*]+\*\*\s*:?/.test(t.trim());
+}
+
+// Blocs Markdown -> HTML (sans l'annexe, geree par renderAnswerContent).
+function rendreBlocs(texte,docs,cliquables){
+  const lignes=String(texte).replace(/\r\n?/g,'\n').split('\n');
+  const out=[];
+  let para=[];
+  let items=[];      // {niveau, ordonnee, html}
+  let parentAnnonce=null; // indentation de la puce « annonce » en cours
+
+  const fermerPara=()=>{
+    if(para.length){ out.push('<p>'+para.join('<br>')+'</p>'); para=[]; }
+  };
+  const fermerListe=()=>{
+    if(!items.length) return;
+    let html='';
+    const pile=[]; // balise de liste ouverte par niveau
+    items.forEach(it=>{
+      const tag=it.ordonnee?'ol':'ul';
+      const niveau=Math.min(it.niveau,pile.length); // pas de saut de niveau
+      if(niveau===pile.length){           // plus profond : nouvelle liste
+        html+=`<${tag}><li>`+it.html; pile.push(tag); return;
+      }
+      while(pile.length>niveau+1){ html+='</li></'+pile.pop()+'>'; }
+      if(pile[niveau]!==tag){             // ul <-> ol au meme niveau
+        html+='</li></'+pile.pop()+`><${tag}><li>`+it.html; pile.push(tag); return;
+      }
+      html+='</li><li>'+it.html;
+    });
+    while(pile.length){ html+='</li></'+pile.pop()+'>'; }
+    out.push(html);
+    items=[]; parentAnnonce=null;
+  };
+
+  for(let i=0;i<lignes.length;i++){
+    const brut=lignes[i];
+    const ligne=brut.trimEnd();
+
+    if(!ligne.trim()){ fermerPara(); continue; }
+
+    // Tableau : ligne d'en-tete | ... | suivie d'une ligne de separation
+    if(/^\s*\|.*\|\s*$/.test(ligne) && i+1<lignes.length && /^\s*\|?\s*:?-{3,}/.test(lignes[i+1])){
+      fermerPara(); fermerListe();
+      const cellules=l=>l.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+      const tete=cellules(ligne);
+      i++;
+      const corps=[];
+      while(i+1<lignes.length && /^\s*\|.*\|\s*$/.test(lignes[i+1])){ i++; corps.push(cellules(lignes[i])); }
+      const td=c=>rendreEnLigne(escapeHtml(c),docs,cliquables);
+      out.push('<div class="table-wrap"><table><thead><tr>'+tete.map(c=>'<th>'+td(c)+'</th>').join('')
+        +'</tr></thead><tbody>'+corps.map(r=>'<tr>'+r.map(c=>'<td>'+td(c)+'</td>').join('')+'</tr>').join('')
+        +'</tbody></table></div>');
+      continue;
+    }
+
+    // Titre
+    let m=/^\s*(#{1,6})\s+(.*?)\s*#*\s*$/.exec(ligne);
+    if(m){
+      fermerPara(); fermerListe();
+      const niveau=Math.min(Math.max(m[1].length,2),4); // h2..h4
+      out.push(`<h${niveau}>`+rendreEnLigne(escapeHtml(m[2].replace(/^\*\*(.*)\*\*$/,'$1')),docs,cliquables)+`</h${niveau}>`);
+      continue;
+    }
+
+    // Filet
+    if(/^\s*([-*_])(\s*\1){2,}\s*$/.test(ligne)){
+      fermerPara(); fermerListe(); out.push('<hr>'); continue;
+    }
+
+    // Puce ou numero
+    m=/^(\s*)([-*•+]|\d+[.)])\s+(.*)$/.exec(ligne);
+    if(m){
+      fermerPara();
+      const indent=m[1].replace(/\t/g,'    ').length;
+      let niveau=Math.min(Math.floor(indent/2),4);
+      const ordonnee=/\d/.test(m[2]);
+      const contenu=m[3];
+      // Sous-liste implicite : le modele ecrit souvent les details au meme
+      // niveau que la puce qui les annonce (« - **Criteres :** » puis
+      // « - Impact visuel ... »). Ils deviennent ses enfants jusqu'a la
+      // prochaine puce libellee (« - **Motif :** ... »).
+      if(parentAnnonce!==null && indent===parentAnnonce.indent && !puceLibellee(contenu) && !ordonnee){
+        niveau=parentAnnonce.niveau+1;
+      } else {
+        parentAnnonce=null;
+      }
+      items.push({niveau,ordonnee,html:rendreEnLigne(escapeHtml(contenu),docs,cliquables)});
+      if(puceAnnonce(contenu) && niveau<4) parentAnnonce={indent,niveau};
+      continue;
+    }
+
+    // Ligne de texte
+    if(items.length){
+      // continuation d'une puce (ligne indentee) sinon fin de liste
+      if(/^\s{2,}/.test(brut)){ items[items.length-1].html+='<br>'+rendreEnLigne(escapeHtml(ligne.trim()),docs,cliquables); continue; }
+      fermerListe();
+    }
+    para.push(rendreEnLigne(escapeHtml(ligne.trim()),docs,cliquables));
+  }
+  fermerPara(); fermerListe();
+  return out.join('');
+}
+
+// Intitule court d'une question generee (gabarit « ... — en precisant : a, b, c ? »).
+function questionCourte(q){
+  let s=String(q).replace(/\*\*/g,'').trim();
+  const i=s.search(/\s[—–-]\s*en précisant\s*:/i);
+  if(i>0) s=s.slice(0,i).trim()+' ?';
+  s=s.replace(/^Concernant\s+«\s*([^»]+?)\s*»\s*,\s*/i,(m,o)=>'['+o+'] ');
+  s=s.replace(/^Que présente le dossier concernant\s+«\s*([^»]+?)\s*»\s*:\s*/i,(m,o)=>'['+o+'] Ce que présente le dossier : ');
+  s=s.replace(/^(\[[^\]]+\]\s+)(\S)/,(m,a,b)=>a+b.toUpperCase());
+  return s.charAt(0).toUpperCase()+s.slice(1);
+}
+
+// Point d'entree. docs = documents de la sidebar (citations cliquables),
+// null/false = citations statiques (reponse du profil elargi).
+function renderAnswerContent(text,docs){
+  if(!text) return '';
+  const cliquables=Array.isArray(docs);
+  const src=String(text).replace(/\r\n?/g,'\n');
+
+  // Separation corps / annexe « Detail par question »
+  const mA=/^\s*(?:[-*_]{3,}\s*\n\s*)?#{1,4}\s*Détail par question\s*$/im.exec(src);
+  const corps=mA?src.slice(0,mA.index):src;
+  const annexe=mA?src.slice(mA.index+mA[0].length):'';
+
+  let html=rendreBlocs(corps,docs,cliquables);
+  if(!annexe.trim()) return html;
+
+  // Une section par question : titres ### se terminant par « ? »
+  const re=/^\s*#{2,4}\s+(.+\?)\s*$/gm;
+  const titres=[];
+  let t;
+  while((t=re.exec(annexe))!==null) titres.push({q:t[1],debut:t.index,fin:t.index+t[0].length});
+  let sections='';
+  if(titres.length===0){
+    sections=rendreBlocs(annexe,docs,cliquables);
+  } else {
+    const avant=annexe.slice(0,titres[0].debut);
+    if(avant.trim()) sections+=rendreBlocs(avant,docs,cliquables);
+    titres.forEach((ti,k)=>{
+      const contenu=annexe.slice(ti.fin,k+1<titres.length?titres[k+1].debut:annexe.length);
+      sections+=`<details class="bloc-question"><summary title="${escapeHtml(ti.q.replace(/\*\*/g,''))}">${escapeHtml(questionCourte(ti.q))}</summary>`
+        +`<div class="bloc-question-body">${rendreBlocs(contenu,docs,cliquables)}</div></details>`;
+    });
+  }
+  const n=titres.length;
+  html+=`<details class="annexe-detail"><summary>Détail par question${n?` · ${n} question${n>1?'s':''}`:''}</summary>`
+    +`<div class="annexe-body">${sections}</div></details>`;
+  return html;
+}
+
+// Texte brut (sans marques Markdown) pour le presse-papiers.
+function reponseEnTexte(text){
+  return String(text||'')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm,'')
+    .replace(/\*\*([^*\n]+?)\*\*/g,'$1')
+    .replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
 }
 
 // ========== STATUS ==========
@@ -1617,6 +1879,7 @@ function buildAnswerBlock(d){
   const fbId='fb-'+messageCounter;
   const block=document.createElement('div');
   block.className='answer-block';
+  block.dataset.raw=d.response||'';
 
   // Sources grid, agregee par document a partir des passages.
   // Voir grouperParDocument : le champ renvoye par l'API est tronque a
@@ -1690,7 +1953,7 @@ function buildAnswerBlock(d){
         Réponse
       </div>
       ${rewriteHtml}
-      <div class="answer-content">${renderAnswerContent(d.response)}</div>
+      <div class="answer-content">${renderAnswerContent(d.response,docs)}</div>
       ${metaHtml}
       <div class="msg-toolbar" id="${fbId}">
         <button class="tool-btn" onclick="copyAnswer(this)">
@@ -1707,9 +1970,22 @@ function buildAnswerBlock(d){
 
 function copyAnswer(btn){
   const block=btn.closest('.answer-block');
-  const t=block.querySelector('.answer-content').innerText;
-  navigator.clipboard.writeText(t);
-  showToast('Réponse copiée');
+  const brut=block.dataset.raw||block.querySelector('.answer-content').innerText;
+  const texte=reponseEnTexte(brut);
+  // HTML pour Word/Outlook : annexe depliee, pastilles en texte simple
+  const html=renderAnswerContent(brut,null)
+    .replace(/<details[^>]*>/g,'<div>').replace(/<\/details>/g,'</div>')
+    .replace(/<summary[^>]*>([\s\S]*?)<\/summary>/g,'<p><strong>$1</strong></p>')
+    .replace(/<span class="cite[^"]*"[^>]*>([\s\S]*?)<\/span>/g,'[$1]');
+  const fini=()=>showToast('Réponse copiée');
+  if(window.ClipboardItem && navigator.clipboard && navigator.clipboard.write){
+    navigator.clipboard.write([new ClipboardItem({
+      'text/html':new Blob([html],{type:'text/html'}),
+      'text/plain':new Blob([texte],{type:'text/plain'})
+    })]).then(fini,()=>navigator.clipboard.writeText(texte).then(fini));
+  } else {
+    navigator.clipboard.writeText(texte).then(fini);
+  }
 }
 
 // ========== SIDEBAR ==========

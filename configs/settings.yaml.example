@@ -21,8 +21,8 @@ retrieval:
   bm25_top_k: 40               # pool brut BM25
   dense_top_k: 40              # pool brut dense
   search_top_k: 100            # sortie de la fusion RRF
-  fusion_top_k: 30             # pool soumis au reranker
-  rerank_top_n: 15             # passages conserves pour le LLM (seule definition)
+  fusion_top_k: 40             # pool soumis au reranker
+  rerank_top_n: 10             # passages conserves pour le LLM (seule definition)
   bm25_weight: 0.45
   dense_weight: 0.55
   rrf_k: 60
@@ -35,8 +35,14 @@ llm:
   temperature: 0
   seed: 42
   max_tokens: 4096
-  num_ctx: 32768               # A5000 24 Go : ~18-20 Go avec le 14B q4 + KV 32k
+  num_ctx: 32768               # A5000 (24 Go) : fenetre pleine 32768
   timeout: 1800
+  # Options Ollama envoyees a chaque appel (query2 v3.1). repeat_penalty 1.05
+  # limite les boucles du decodage glouton (temperature 0) sans changer le
+  # ton ; a comparer avec 1.0 sur la campagne de reference avant de le garder.
+  options:
+    repeat_penalty: 1.05
+    repeat_last_n: 256
 
 chunking:
   # 1024/150 : valeurs retenues apres les campagnes Brissy et Beaumont Sud
@@ -104,23 +110,50 @@ watcher:
   api_port: 8090
   default_index_name: mrae-beaumont
 
-# Pipeline query2 (recherche A -> juge de couverture -> recherche B -> generation)
+# Pipeline de reponse (src/rag/query2.py, v3.6) :
+#   1. analyse de la demande (prompts.yaml : analyse_*), puis composition des
+#      questions par gabarits (gabarits_questions) : l'objet d'abord, puis un
+#      motif par question ; repli sur questions_prompt si l'analyse echoue ;
+#   2. chaque question : recherche hybride + rerank + generation avec les
+#      reglages `retrieval` ci-dessus, la demande transmise en cadrage
+#      (cadrage_prompt) ; gardes par bloc : esquive -> profil `deep`,
+#      tronque / degenere -> relance sous `relance`, pages citees hors lot
+#      -> signalees ;
+#   3. synthese LLM (demande + analyse + blocs cites) avec les memes gardes,
+#      concatenation des blocs en repli et en annexe ; verdict COUVERT /
+#      PARTIEL / NON_COUVERT dans la trace.
 query2:
-  termes_structurants: []      # ex. [beaumont, sud] : mots presents dans tous les titres
-  decoupage_volets: true      # decoupe la remarque en volets avant la recherche A
-  max_volets: 3               # volets au maximum (1 volet = comportement d'avant)
-  garde_contradiction: true
-  catalogue_couverture: true
-  deep:
+  # --- lot (retriever.py v3.6, après le rerank) ---
+  documents_secondaires: ["RNT", "resume_non_technique", "résumé non technique"]  # motifs de nom de fichier
+  plafond_secondaires: 2        # passages au plus issus de ces documents par lot (0 : désactivé)
+  exclure_sommaires: true       # écarte les passages de sommaire / liste de cartes
+  # --- synthèse (query2.py v3.6) ---
+  retention_min: 0.6            # part des données des blocs à retrouver dans la synthèse
+  retention_relance: true       # sous le seuil : une relance avec les lignes omises
+  retention_annexe: true        # toujours sous le seuil : lignes jointes telles quelles
+  transformation: true     # etape 1 active (false = la demande est posee telle quelle)
+  max_questions: 6         # objet (1 ou 2) + aspects + motifs ; au-dela, les derniers sont tronques (warning)
+  cadrage: true            # transmettre la demande a la generation (cadrage_prompt)
+  repli_esquive: true      # reponse esquivee -> seconde passe avec le profil deep
+  deep:                    # profil elargi : repli automatique, et toggle UI
     bm25_top_k: 80
     dense_top_k: 80
     search_top_k: 200
     fusion_top_k: 60
-    rerank_top_n: 30
-    coverage_max_passages: 20
-    coverage_max_queries: 4
-    quota_par_requete: 6
-    coverage_passage_chars: 1200
+    rerank_top_n: 20
+  objet:                   # budget de la seule question « objet » (elle couvre un chapitre entier)
+    rerank_top_n: 15
+  relance_boucle: true     # relancer un bloc tronque (max_tokens) ou degenere (lignes en boucle)
+  relance:                 # options LLM de la relance (surcharge temporaire)
+    repeat_penalty: 1.1
+    repeat_last_n: 256
+  signaler_hors_lot: true  # note en fin de bloc listant les pages citees absentes du lot
+  synthese: true           # etape 3 : redaction LLM a partir des blocs (synthese_prompt) ; repli = concatenation
+  annexe_blocs: true       # joindre les blocs par question sous la synthese ("Detail par question")
+  degenere:                # seuils de detection d'une reponse qui boucle
+    min_lignes: 8
+    ratio_min: 0.6
+    repetitions_max: 4
 
 # Evaluation RAGAS (onglet RAGAS de l'interface admin). Absente = le
 # modele de generation ci-dessus sert aussi de juge.

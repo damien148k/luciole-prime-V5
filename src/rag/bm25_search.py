@@ -62,7 +62,9 @@ class BM25Search:
                     "metadata.author"      # Auteur
                 ],
                 "type": "best_fields",
-                "fuzziness": "AUTO"
+                "fuzziness": "AUTO",
+                "prefix_length": 2,
+                "max_expansions": 10
             }
         }
 

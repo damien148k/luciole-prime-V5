@@ -8,6 +8,11 @@ est conservee : `analyze()`, `hybrid_search`, `reranker`, `llm_generator`,
 Difference V4 : `fusion_top_k` et `rerank_top_n` ne sont pas des copies
 faites a la construction, ce sont des lectures sur Settings a chaque
 acces. Un reload de configuration est vu a la requete suivante.
+
+v3.6 : apres le rerank, le lot est filtre par `query2.plafonner_secondaires`
+(sommaires ecartes, plafond de passages issus des documents de resume :
+`query2.documents_secondaires`, `query2.plafond_secondaires`,
+`query2.exclure_sommaires`).
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from typing import Dict, List, Optional
 from loguru import logger
 
 from src.config.settings import Settings
+from src.rag.query2 import plafonner_secondaires
 
 
 class Retriever:
@@ -76,7 +82,18 @@ class Retriever:
             results = self.hybrid_search.search(query, top_k=search_top_k, filters=filters,
                                                 bm25_top_k=bm25_k, dense_top_k=dense_k)
         if self.reranker and results:
-            results = self.reranker.rerank(query, results[:fusion_k], top_n=top_n)
+            # Tous les candidats sont classés (top_n = fusion_k) ; la coupe à
+            # top_n se fait ensuite, après écart des sommaires et plafond des
+            # documents secondaires (query2 v3.6), les places libérées allant
+            # aux candidats suivants du classement.
+            classes = self.reranker.rerank(query, results[:fusion_k], top_n=max(top_n, fusion_k))
+            results = plafonner_secondaires(
+                classes,
+                motifs=list(self.settings.get("query2.documents_secondaires", []) or []),
+                plafond=int(self.settings.get("query2.plafond_secondaires", 2) or 0),
+                top_n=top_n,
+                exclure_sommaires=bool(self.settings.get("query2.exclure_sommaires", True)),
+            )
 
         context = self._build_context(results, top_n=top_n)
         llm = self.llm_generator.generate(query, context, results, custom_prompt=custom_prompt, history=history)
